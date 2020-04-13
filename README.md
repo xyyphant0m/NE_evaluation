@@ -2,15 +2,23 @@
 It's a self-use network embedding evaluation program
 
 ## Usage:
-evaluation.py [-h] [--task [TASK [TASK ...]]] --datasets-path<br/>
-                     [DATASETS_PATH [DATASETS_PATH ...]] --embeddings-path<br/>
-                     [EMBEDDINGS_PATH [EMBEDDINGS_PATH ...]] --seed SEED<br/>
-                     [--Np NP] [--sampling SAMPLING]<br/>
-                     [--eval-metrics [EVAL_METRICS [EVAL_METRICS ...]]]<br/>
-                     [--start-train-ratio START_TRAIN_RATIO]<br/>
-                     [--stop-train-ratio STOP_TRAIN_RATIO]<br/>
-                     [--num-train-ratio NUM_TRAIN_RATIO] [--C C]<br/>
-                     [--num-split NUM_SPLIT] [--num-workers NUM_WORKERS]<br/>
+evaluation.py [-h] [--task [TASK [TASK ...]]] --datasets-path
+
+                    [DATASETS_PATH [DATASETS_PATH ...]] --embeddings-path
+
+                    [EMBEDDINGS_PATH [EMBEDDINGS_PATH ...]] --seed SEED
+
+                    [--Np NP] [--sampling SAMPLING]
+
+                    [--eval-metrics [EVAL_METRICS [EVAL_METRICS ...]]]
+
+                    [--start-train-ratio START_TRAIN_RATIO]
+
+                    [--stop-train-ratio STOP_TRAIN_RATIO]
+
+                    [--num-train-ratio NUM_TRAIN_RATIO] [--C C]
+
+                    [--num-split NUM_SPLIT] [--num-workers NUM_WORKERS]
 
 
 optional arguments:<br/>
