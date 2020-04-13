@@ -1,7 +1,8 @@
 # NE_evaluation
 It's a self-use network embedding evaluation program
 
-usage: evaluation.py [-h] [--task [TASK [TASK ...]]] --datasets-path
+## Usage:
+evaluation.py [-h] [--task [TASK [TASK ...]]] --datasets-path
                      [DATASETS_PATH [DATASETS_PATH ...]] --embeddings-path
                      [EMBEDDINGS_PATH [EMBEDDINGS_PATH ...]] --seed SEED
                      [--Np NP] [--sampling SAMPLING]
