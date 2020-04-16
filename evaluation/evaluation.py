@@ -11,7 +11,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 from sklearn.model_selection import ShuffleSplit
 from sklearn.multiclass import OneVsRestClassifier
-from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.preprocessing import MultiLabelBinarizer,normalize,scale
 from scipy.sparse import csr_matrix
 import logging
 from utils import *
@@ -123,13 +123,17 @@ def reconstruction_link_prediction(edges, labels, embedding_filenames, eval_metr
     Np = int(Np)
     for fn in embedding_filenames:
         emb = load_embeddings(fn) #support various file types
+        #emb = normalize(emb,norm='l2',axis=1)
+        #emb = scale(emb,axis=1)
         logger.info("Embedding has shape %d, %d", emb.shape[0], emb.shape[1])
         if sampling is None:
             matrix_sim = emb.dot(emb.T)
             sim = matrix_sim[edges[:, 0], edges[:, 1]]
+            #sim = -euclidean_distance(emb[edges[:, 0]], emb[edges[:, 1]])
         else:
             #sim = dot_product(emb[edges[:, 0]], emb[edges[:, 1]])
             sim = batch_dot_product(emb, edges, batch_size=1e6)
+            #sim = -batch_euclidean_distance(emb, edges, batch_size=1e6)
             #sim = -euclidean_distance(emb[edges[:, 0]], emb[edges[:, 1]])
         ind = np.argsort(sim)[::-1] #sort descend
         assert len(ind) >= Np ,'Np too large'
@@ -140,15 +144,14 @@ def reconstruction_link_prediction(edges, labels, embedding_filenames, eval_metr
             logger.info(positive)
             x = np.arange(Np+1)
             pk = (positive*1.0)/(x+1)
-
+            res_pk = pk[[int(10**i) for i in np.arange(0,6.5,0.5)]]
             fid,ax = plt.subplots()
-            ax.semilogx(np.arange(Np+1),pk)
+            #ax.semilogx([int(10**i) for i in np.arange(0,6.5,0.5)],res_pk)
+            ax.semilogx(np.arange(0,1e6+1),pk)
             ax.grid()
             plt.show()
-            
-            res_pk = pk[[10**i for i in range(0,7)]]
             res_precision_k.append(res_pk)
-            logger.info("{},Precision_k:\t{}".format(os.path.basename(fn),pk))
+            logger.info("{},Precision_k:\n{}".format(os.path.basename(fn),res_pk))
         if 'AUC' in eval_metrics:
             rank = len(labels)-np.where(labels_ordered == 1)[0]
             M = len(rank)
@@ -209,13 +212,10 @@ def evalution_task(dataset_names,embedding_filenames,args):
     if 'link_prediction' in task:
         logger.info("Begin link prediction")
         for filename in dataset_names:
-            G = load_edgelist(filename)
-            logger.info("Graph info: num of nodes-----{},num of edges-----{}".format(G.number_of_nodes(), G.number_of_edges()))
             Path_name = os.path.dirname(filename)
             Data_name = os.path.basename(Path_name)
-            dataset_train_name = os.path.join(Path_name,Data_name+"_0.7_train.edgelist")
-            dataset_test_name = os.path.join(Path_name,Data_name+"_0.7_test.edgelist")
-            G_train = load_edgelist(dataset_train_name)
+            dataset_test_name = os.path.join(Path_name,Data_name+"_test.edgelist")
+            G_train = load_edgelist(filename)
             G_test = load_edgelist(dataset_test_name)
             logger.info("Graph_train info: num of nodes-----{},num of edges-----{}".format(G_train.number_of_nodes(), G_train.number_of_edges()))
             logger.info("Graph_test info: num of nodes-----{},num of edges-----{}".format(G_test.number_of_nodes(), G_test.number_of_edges()))

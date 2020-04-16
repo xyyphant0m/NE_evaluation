@@ -39,6 +39,16 @@ def load_adjacency_matrix(file, variable_name="network"):
     data = sio.loadmat(file)
     return data[variable_name]
 
+def load_network_matrix(filename,variable_name="network"):
+    ext=os.path.splitext(filename)[1]
+    if ext == ".mat":
+        data = sio.loadmat(filename)
+        return data[variable_name]
+    elif ext == ".edgelist":
+        G = nx.read_edgelist(filename,nodetype=int)
+        G = nx.to_undirected(G)
+        return nx.to_scipy_sparse_matrix(G)
+
 def load_label(file, variable_name="group"):
     if file.endswith(".tsv") or file.endswith(".txt"):
         data = np.loadtxt(file).astype(np.int32)
@@ -88,15 +98,33 @@ def batch_dot_product(emb, edges, batch_size=None):
     return np.hstack(res)
 
 def euclidean_distance(X, Y):
+    print("euclidean_distance")
     return np.linalg.norm(X-Y, axis=1)
 
+def batch_euclidean_distance(emb, edges, batch_size=None):
+    print("batch_euclidean_distance")
+    if batch_size is None:
+        return euclidean_distance(emb[edges[:, 0]], emb[edges[:, 1]])
+    batch_size = int(batch_size)
+    n = int(edges.shape[0] // batch_size) # floor and /
+    res = []
+    for i in range(n):
+        r = euclidean_distance(emb[edges[i*batch_size:(i+1)*batch_size, 0]], emb[edges[i*batch_size:(i+1)*batch_size, 1]])
+        res.append(r)
+    a = edges.shape[0]-n*batch_size
+    if a > 0:
+        res.append(euclidean_distance(emb[edges[n*batch_size:, 0]], emb[edges[n*batch_size:, 1]]))
+    return np.hstack(res)
+
+
 def split_dataset(dataset_name, ratio=0.7):
-    filename = os.path.join('../datasets', dataset_name, '{}.mat'.format(dataset_name))
-    A = load_adjacency_matrix(filename)
-    print(A.nnz)
-    graph = nx.from_scipy_sparse_matrix(A)
-    path = "../datasets/name/name.edgelist"
-    nx.write_edgelist(graph,path,data=False)
+    filename = os.path.join('../datasets', dataset_name, '{}.edgelist'.format(dataset_name))
+    #A = load_adjacency_matrix(filename)
+    #print(A.nnz)
+    #graph = nx.from_scipy_sparse_matrix(A)
+    #path = "../datasets/name/name.edgelist"
+    #nx.write_edgelist(graph,path,data=False)
+    graph = load_edgelist(filename)
     graph_train = nx.Graph()
     graph_test = nx.Graph()
     edges = np.random.permutation(list(graph.edges()))
