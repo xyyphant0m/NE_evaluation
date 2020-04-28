@@ -5,6 +5,8 @@ import networkx as nx
 import os
 import operator
 from gensim.models import Word2Vec, KeyedVectors
+from sklearn.preprocessing import normalize
+from sklearn.linear_model import LogisticRegression
 import pickle as pkl
 
 def load_w2v_feature(file):
@@ -33,6 +35,8 @@ def save_wv(filename, data):
 
 def load_edgelist(filename):
     G = nx.read_edgelist(filename,nodetype=int)
+    #for se in list(nx.selfloop_edges(G)):
+    #    G.remove_edge(se[0],se[1])
     return nx.to_undirected(G)
 
 def load_adjacency_matrix(file, variable_name="network"):
@@ -44,10 +48,17 @@ def load_network_matrix(filename,variable_name="network"):
     if ext == ".mat":
         data = sio.loadmat(filename)
         return data[variable_name]
-    elif ext == ".edgelist":
-        G = nx.read_edgelist(filename,nodetype=int)
-        G = nx.to_undirected(G)
-        return nx.to_scipy_sparse_matrix(G)
+    else:
+        G = nx.read_edgelist(filename, nodetype=int)
+        G = G.to_undirected()
+        node_number = G.number_of_nodes()
+        A = sp.lil_matrix((node_number, node_number))
+        for e in G.edges():
+            if e[0] != e[1]:
+                A[e[0], e[1]] = 1
+                A[e[1], e[0]] = 1
+        A = sp.csr_matrix(A)
+        return A
 
 def load_label(file, variable_name="group"):
     if file.endswith(".tsv") or file.endswith(".txt"):
@@ -84,6 +95,7 @@ def dot_product(X, Y):
     return np.sum(X*Y, axis=1)
 
 def batch_dot_product(emb, edges, batch_size=None):
+    print("dot product")
     if batch_size is None:
         return dot_product(emb[edges[:, 0]], emb[edges[:, 1]])
     batch_size = int(batch_size)
@@ -97,12 +109,32 @@ def batch_dot_product(emb, edges, batch_size=None):
         res.append(dot_product(emb[edges[n*batch_size:, 0]], emb[edges[n*batch_size:, 1]]))
     return np.hstack(res)
 
+def cos_similarity(emb,edges):
+    emb_norm = normalize(emb,norm='l2',axis=1)
+    matrix_sim = emb_norm.dot(emb_norm.T)
+    return matrix_sim[edges[:,0],edges[:,1]]
+
+def batch_cos_similarity(emb, edges, batch_size=None):
+    print("cosine similarty")
+    if batch_size is None:
+        return cos_similarity(emb,edges)
+    batch_size = int(batch_size)
+    n = int(edges.shape[0] // batch_size) # floor and /
+    res = []
+    emb_norm = normalize(emb,norm='l2',axis=1)
+    for i in range(n):
+        r = dot_product(emb_norm[edges[i*batch_size:(i+1)*batch_size, 0]], emb_norm[edges[i*batch_size:(i+1)*batch_size, 1]])
+        res.append(r)
+    a = edges.shape[0]-n*batch_size
+    if a > 0:
+        res.append(dot_product(emb_norm[edges[n*batch_size:, 0]], emb_norm[edges[n*batch_size:, 1]]))
+    return np.hstack(res)
+
 def euclidean_distance(X, Y):
-    print("euclidean_distance")
     return np.linalg.norm(X-Y, axis=1)
 
 def batch_euclidean_distance(emb, edges, batch_size=None):
-    print("batch_euclidean_distance")
+    print("euclidean_distance")
     if batch_size is None:
         return euclidean_distance(emb[edges[:, 0]], emb[edges[:, 1]])
     batch_size = int(batch_size)
@@ -115,6 +147,128 @@ def batch_euclidean_distance(emb, edges, batch_size=None):
     if a > 0:
         res.append(euclidean_distance(emb[edges[n*batch_size:, 0]], emb[edges[n*batch_size:, 1]]))
     return np.hstack(res)
+
+def get_edge_embeddings(emb_matrix,edge_list,sim_method):
+    embs = []
+    for edge in edge_list:
+        node1 = edge[0]
+        node2 = edge[1]
+        emb1 = emb_matrix[node1]
+        emb2 = emb_matrix[node2]
+        if sim_method == 'avg':
+            edge_emb = (emb1+emb2)*0.5 #average
+        elif sim_method == 'had':
+            edge_emb = np.multiply(emb1, emb2) #hadamard product
+        elif sim_method == 'l1':
+            edge_emb = np.abs(emb1-emb2) #l1
+        elif sim_method == 'l2':
+            edge_emb = np.abs(emb1-emb2) ** 2 #l2
+        embs.append(edge_emb)
+    embs = np.array(embs)
+    return embs
+
+def get_similarity(emb,edges,labels,sim_method,train_lr_edges=None,train_lr_labels=None,batch_size=None):
+    print(edges.shape)
+    if sim_method == 'dp':
+        sim = batch_dot_product(emb,edges,batch_size)
+    elif sim_method == 'cos':
+        sim = batch_cos_similarity(emb,edges,batch_size)
+    elif sim_method == 'euc':
+        sim = -batch_euclidean_distance(emb,edges,batch_size)
+    else:
+        test_edge_embs = get_edge_embeddings(emb,edges,sim_method)
+        train_edge_embs = get_edge_embeddings(emb,train_lr_edges,sim_method)
+        edge_classifier = LogisticRegression(random_state=0)
+        edge_classifier.fit(train_edge_embs, train_lr_labels)
+        #edge_classifier.fit(test_edge_embs, labels)
+        #pro = edge_classifier.predict_proba(test_edge_embs)
+        sim = edge_classifier.predict_proba(test_edge_embs)[:, 1]
+    return sim
+
+
+def _plain_bfs(G, source):
+    """A fast BFS node generator"""
+    seen = set()
+    nextlevel = {source}
+    while nextlevel:
+        thislevel = nextlevel
+        nextlevel = set()
+        for v in thislevel:
+            if v not in seen:
+                yield v
+                seen.add(v)
+                nextlevel.update(G[v])
+
+
+def gen_train_test_data(dataset_name, ratio=0.7):
+    filename = os.path.join('../datasets', dataset_name, '{}.edgelist'.format(dataset_name))
+    graph = load_edgelist(filename)
+    get_graph_info(graph)
+    graph_train = nx.Graph(graph)
+    graph_test = nx.Graph()
+    edges = np.random.permutation(list(graph.edges()))
+    n_edges = graph.number_of_edges()
+    orig_num_cc = nx.number_connected_components(graph)
+    print("original number of connected components:{}".format(orig_num_cc))
+    num_test_edges = int((1-ratio)*n_edges)
+    cnt = 0
+    for a, b in edges:
+        graph_train.remove_edge(a, b)
+        
+        reach_from_a = _plain_bfs(graph_train,a)
+        if b not in reach_from_a:
+            graph_train.add_edge(a, b)
+        else:
+            graph_test.add_edge(a, b)
+            cnt = cnt + 1 
+        if cnt == num_test_edges:
+            break
+        '''
+        if nx.number_connected_components(graph_train) > orig_num_cc:
+            graph_train.add_edge(a, b)
+            continue
+        if cnt < num_test_edges:
+            cnt = cnt + 1
+            graph_test.add_edge(a,b)
+        if cnt == num_test_edges:
+            break
+        '''
+    if graph_test.number_of_edges() < num_test_edges:
+        print("WARNING: not enough removable edges to perform full train-test split!")
+        print("Num. (test) edges requested: ({})".format(num_test_edges))
+        print("Num. (test) edges returned: ({})".format(graph_test.number_of_edges()))
+    get_graph_info(graph_train)
+    get_graph_info(graph_test)
+    data_path = os.path.join('../datasets',dataset_name,'{}_{}'.format(dataset_name, ratio))
+    if not os.path.exists(data_path):
+        os.makedirs(data_path)
+    nx.write_edgelist(graph_train, os.path.join(data_path, '{}_{}_train_ncc.edgelist'.format(dataset_name, ratio)), data=False)
+    nx.write_edgelist(graph_test, os.path.join(data_path, '{}_{}_test_ncc.edgelist'.format(dataset_name, ratio)), data=False)
+
+def random_gen_train_test_data(dataset_name, ratio=0.7):
+    filename = os.path.join('../datasets', dataset_name, '{}.edgelist'.format(dataset_name))
+    graph = load_edgelist(filename)
+    graph_train = nx.Graph(graph)
+    graph_test = nx.Graph()
+    num_test_edges = int((1-ratio)*graph.number_of_edges())
+    edges = np.random.permutation(list(graph.edges()))
+    cnt = 0
+    for a, b in edges:
+        if cnt < num_test_edges:
+            cnt = cnt + 1
+            graph_train.remove_edge(a,b)
+            graph_test.add_edge(a,b)
+        else:
+            break
+    get_graph_info(graph)
+    get_graph_info(graph_train)
+    get_graph_info(graph_test)
+    assert graph.number_of_nodes() == graph_train.number_of_nodes() , "graph_train do not have the same dimension with graph"
+    data_path = os.path.join('../datasets',dataset_name,'{}_{}'.format(dataset_name, ratio))
+    if not os.path.exists(data_path):
+        os.makedirs(data_path)
+    nx.write_edgelist(graph_train, os.path.join(data_path, '{}_{}_train.edgelist'.format(dataset_name, ratio)), data=False)
+    nx.write_edgelist(graph_test, os.path.join(data_path, '{}_{}_test.edgelist'.format(dataset_name, ratio)), data=False)
 
 
 def split_dataset(dataset_name, ratio=0.7):
@@ -145,6 +299,7 @@ def split_dataset(dataset_name, ratio=0.7):
         graph_train.add_edges_from(test_edges[:now_number-num_test_edges])
         graph_test.remove_edges_from(test_edges[:now_number-num_test_edges])
 
+    assert graph.number_of_nodes() == graph_train.number_of_nodes() , "graph_train do not have the same dimension with graph"
     get_graph_info(graph)
     get_graph_info(graph_train)
     get_graph_info(graph_test)
@@ -154,8 +309,8 @@ def split_dataset(dataset_name, ratio=0.7):
     if not os.path.exists(data_path):
         os.makedirs(data_path)
 
-    nx.write_edgelist(graph_train, os.path.join(data_path, '{}_{}_train.edgelist'.format(dataset_name, ratio)), data=False)
-    nx.write_edgelist(graph_test, os.path.join(data_path, '{}_{}_test.edgelist'.format(dataset_name, ratio)), data=False)
+    nx.write_edgelist(graph_train, os.path.join(data_path, '{}_{}_train2.edgelist'.format(dataset_name, ratio)), data=False)
+    nx.write_edgelist(graph_test, os.path.join(data_path, '{}_{}_test2.edgelist'.format(dataset_name, ratio)), data=False)
 
 
 

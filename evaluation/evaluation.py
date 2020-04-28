@@ -7,8 +7,8 @@ import random
 from functools import reduce
 
 from sklearn import svm
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import f1_score
+from sklearn.linear_model import LogisticRegression,LogisticRegressionCV
+from sklearn.metrics import f1_score,roc_auc_score,classification_report,accuracy_score,auc,precision_recall_curve,average_precision_score
 from sklearn.model_selection import ShuffleSplit
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.preprocessing import MultiLabelBinarizer,normalize,scale
@@ -70,6 +70,41 @@ def predict_cv(X, y, train_ratio=0.2, n_splits=10, random_state=0, C=1., num_wor
     #logger.info("Average micro %.2f, Average macro %.2f",np.mean(micro) * 100,np.mean(macro) * 100)
     return np.mean(micro)*100, np.mean(macro)*100
 
+def node_classification(multi_label,embedding_filenames,args):
+    seed = args.seed
+    C = args.C
+    start_train_ratio = args.start_train_ratio
+    stop_train_ratio = args.stop_train_ratio
+    num_train_ratio = args.num_train_ratio
+    num_split = args.num_split
+    num_workers = args.num_workers
+    res_micro = []
+    res_macro = []
+    for fn in embedding_filenames:
+        emb = load_embeddings(fn)
+        logger.info("Embedding has shape %d, %d", emb.shape[0], emb.shape[1])
+        num_label = multi_label.sum(axis=1, dtype=np.int32)
+        idx = np.argwhere(num_label == 0)
+        logger.info("%d instances with no label" % len(idx))
+        #  if len(idx):
+        #      embedding = embedding[label.getnnz(1)>0]
+        #      label = label[label.getnnz(1)>0]
+        #  logger.info("After deleting ...")
+        train_ratios = np.linspace(start_train_ratio, stop_train_ratio, num_train_ratio)
+
+        f1 = list()
+        for tr in train_ratios:
+            result = predict_cv(emb, multi_label, train_ratio=tr/100.,n_splits=num_split, C=C, random_state=seed,num_workers=num_workers)
+            f1.append(result)
+        micro, macro = zip(*f1)
+        logger.info(os.path.basename(fn))
+        logger.info(" ".join([str(x) for x in micro]))
+        logger.info(" ".join([str(x) for x in macro]))
+        res_micro.append(micro)
+        res_macro.append(macro)
+    return res_micro,res_macro
+
+
 def sampling_edges(G, sampling, G_test=None):
     # when in link prediction, sampling means sample from G_test
     recon_flag = (G_test is None) # recon_flag = True (G_test==None) means it's in network reconstruction
@@ -117,89 +152,148 @@ def sampling_edges(G, sampling, G_test=None):
     logger.info("len of labels:%d",len(labels))
     return edges, labels
 
-def reconstruction_link_prediction(edges, labels, embedding_filenames, eval_metrics, sampling, Np=1e6):
+
+def network_reconstruction(edges, labels, embedding_filenames, sim_methods, eval_metrics, sampling=None, Np=1e6):
     res_precision_k = []
     res_auc = []
     Np = int(Np)
+    logger.info("chosen number of pairs:{}".format(Np))
     for fn in embedding_filenames:
         emb = load_embeddings(fn) #support various file types
-        #emb = normalize(emb,norm='l2',axis=1)
-        #emb = scale(emb,axis=1)
         logger.info("Embedding has shape %d, %d", emb.shape[0], emb.shape[1])
-        if sampling is None:
-            matrix_sim = emb.dot(emb.T)
-            sim = matrix_sim[edges[:, 0], edges[:, 1]]
-            #sim = -euclidean_distance(emb[edges[:, 0]], emb[edges[:, 1]])
-        else:
-            #sim = dot_product(emb[edges[:, 0]], emb[edges[:, 1]])
-            sim = batch_dot_product(emb, edges, batch_size=1e6)
-            #sim = -batch_euclidean_distance(emb, edges, batch_size=1e6)
-            #sim = -euclidean_distance(emb[edges[:, 0]], emb[edges[:, 1]])
-        ind = np.argsort(sim)[::-1] #sort descend
-        assert len(ind) >= Np ,'Np too large'
-        labels_ordered = labels[ind]
-        logger.info(labels_ordered)
-        if 'precision_k' in eval_metrics:
-            positive = np.cumsum(labels_ordered[:Np+1])
-            logger.info(positive)
-            x = np.arange(Np+1)
-            pk = (positive*1.0)/(x+1)
-            res_pk = pk[[int(10**i) for i in np.arange(0,6.5,0.5)]]
-            fid,ax = plt.subplots()
-            #ax.semilogx([int(10**i) for i in np.arange(0,6.5,0.5)],res_pk)
-            ax.semilogx(np.arange(0,1e6+1),pk)
-            ax.grid()
-            plt.show()
-            res_precision_k.append(res_pk)
-            logger.info("{},Precision_k:\n{}".format(os.path.basename(fn),res_pk))
-        if 'AUC' in eval_metrics:
-            rank = len(labels)-np.where(labels_ordered == 1)[0]
-            M = len(rank)
-            N = len(labels)-M
-            auc = (np.sum(rank)-M*(M+1)/2)*1.0/M/N
-            res_auc.append(auc)
-            logger.info("{},AUC:\t{}".format(os.path.basename(fn),res_auc[-1]))
+        for sim_method in sim_methods:
+            if sampling is None:
+                sim = get_similarity(emb,edges,labels,sim_method)
+            else:
+                sim = get_similarity(emb,edges,labels,sim_method,batch_size=1e6)
+            ind = np.argsort(sim)[::-1] #sort descend
+            assert len(ind) >= Np ,'Np too large'
+            labels_ordered = labels[ind]
+            if 'precision_k' in eval_metrics:
+                positive = np.cumsum(labels_ordered[:Np+1])
+                x = np.arange(Np+1)
+                pk = (positive*1.0)/(x+1)
+                res_pk = pk[[int(10**i) for i in np.arange(0,6.5,0.5)]]
+                #fid,ax = plt.subplots()
+                #ax.semilogx([int(10**i) for i in np.arange(0,6.5,0.5)],res_pk)
+                #ax.semilogx(np.arange(0,1e6+1),pk)
+                #ax.grid()
+                #plt.show()
+                res_precision_k.append(res_pk)
+                logger.info("{},sim_method:{},Precision_k:\n{}".format(os.path.basename(fn),sim_method,res_pk))
+            if 'AUC' in eval_metrics:
+                rank = len(labels)-np.where(labels_ordered == 1)[0]
+                M = len(rank)
+                N = len(labels)-M
+                aucs = (np.sum(rank)-M*(M+1)/2)*1.0/M/N
+                res_auc.append(aucs)
+                logger.info("{},sim_method:{},AUC:\t{}".format(os.path.basename(fn),sim_method,res_auc[-1]))
     return res_precision_k,res_auc
 
-def node_classification(multi_label,embedding_filenames,args):
-    seed = args.seed
-    C = args.C
-    start_train_ratio = args.start_train_ratio
-    stop_train_ratio = args.stop_train_ratio
-    num_train_ratio = args.num_train_ratio
-    num_split = args.num_split
-    num_workers = args.num_workers
-    res_micro = []
-    res_macro = []
-    for fn in embedding_filenames:
-        emb = load_embeddings(fn)
-        logger.info("Network Embedding loaded!")
-        logger.info("Embedding has shape %d, %d", emb.shape[0], emb.shape[1])
-        num_label = multi_label.sum(axis=1, dtype=np.int32)
-        idx = np.argwhere(num_label == 0)
-        logger.info("%d instances with no label" % len(idx))
-        #  if len(idx):
-        #      embedding = embedding[label.getnnz(1)>0]
-        #      label = label[label.getnnz(1)>0]
-        #  logger.info("After deleting ...")
-        train_ratios = np.linspace(start_train_ratio, stop_train_ratio, num_train_ratio)
 
-        f1 = list()
-        for tr in train_ratios:
-            result = predict_cv(emb, multi_label, train_ratio=tr/100.,n_splits=num_split, C=C, random_state=seed,num_workers=num_workers)
-            f1.append(result)
-        micro, macro = zip(*f1)
-        logger.info(os.path.basename(fn))
-        logger.info(" ".join([str(x) for x in micro]))
-        logger.info(" ".join([str(x) for x in macro]))
-        res_micro.append(micro)
-        res_macro.append(macro)
-    return res_micro,res_macro
+def form_test_set(G,G_test):
+    test_true_edges = np.array(list(G_test.edges()))
+    true_np = test_true_edges.shape[0]
+    logger.info("Number of true or false test edges: {}".format(true_np))
+    N = G.number_of_nodes()
+    test_false_edges = []
+    edge_set = set()
+    cnt = 0
+    while True:
+        i = np.random.randint(0,N-1)
+        j = np.random.randint(i+1,N)
+        if (i,j) not in edge_set:
+            edge_set.add((i,j))
+            if not G.has_edge(i,j):
+                test_false_edges.append((i,j))
+                cnt = cnt+1
+        if cnt>= true_np:
+            break
+    test_false_edges = np.array(test_false_edges).astype(int)
+    assert test_false_edges.shape[0] == true_np ,'true and false do not have same dimension'
+    test_edges = np.concatenate([test_true_edges,test_false_edges])
+    test_labels = np.array(np.concatenate([np.ones(true_np),np.zeros(true_np)]))
+    return test_edges,test_labels
+
+def form_train_lr_set(G,G_test,G_train):
+    train_true_edges = np.random.permutation(list(G_train.edges()))
+    true_np = G_test.number_of_edges()
+    logger.info("Number of true or false G_train edges: {}".format(true_np))
+    N = G.number_of_nodes()
+    train_lr_true_edges = []
+    train_lr_false_edges = []
+    edge_set = set()
+    cnt = 0
+    for a,b in train_true_edges:
+        if cnt < true_np:
+            cnt = cnt + 1
+            train_lr_true_edges.append((a,b))
+    cnt = 0
+    while True:
+        i = np.random.randint(0,N-1)
+        j = np.random.randint(i+1,N)
+        if (i,j) not in edge_set:
+            edge_set.add((i,j))
+            if not G.has_edge(i,j):
+                train_lr_false_edges.append((i,j))
+                cnt = cnt+1
+        if cnt>= true_np:
+            break
+    train_lr_true_edges = np.array(train_lr_true_edges).astype(int)
+    train_lr_false_edges = np.array(train_lr_false_edges).astype(int)
+    assert train_lr_false_edges.shape[0] == true_np ,'true and false do not have same dimension'
+    train_lr_edges = np.concatenate([train_lr_true_edges,train_lr_false_edges])
+    train_lr_labels = np.array(np.concatenate([np.ones(true_np),np.zeros(true_np)]))
+    return train_lr_edges,train_lr_labels
+
+def link_prediction(G, G_train, G_test, embedding_filenames, sim_methods, eval_metrics, sampling=None, Np=1e6):
+    res_precision_k = []
+    res_auc = []
+    Np = int(Np)
+    test_edges,test_labels = form_test_set(G,G_test)
+    if 'avg' in sim_methods or 'had' in sim_methods or 'l1' in sim_methods or 'l2' in sim_methods:
+        train_lr_edges,train_lr_labels = form_train_lr_set(G,G_test,G_train)
+    logger.info("Have the test data now, test_edges.shape:{},{}".format(test_edges.shape[0],test_edges.shape[1]))
+    for fn in embedding_filenames:
+        emb = load_embeddings(fn) #support various file types
+        logger.info("Embedding has shape %d, %d", emb.shape[0], emb.shape[1])
+        for sim_method in sim_methods:
+            if sim_method in ['avg','had','l1','l2']:
+                sim = get_similarity(emb,test_edges,test_labels,sim_method,train_lr_edges,train_lr_labels)
+            else:
+                sim = get_similarity(emb,test_edges,test_labels,sim_method)
+            logger.info("len of similarty:{}".format(len(sim)))
+            ind = np.argsort(sim)[::-1] #sort descend
+            #assert len(ind) >= Np ,'Np too large'
+            labels_ordered = test_labels[ind]
+            Np = len(labels_ordered)
+            if 'precision_k' in eval_metrics:
+                positive = np.cumsum(labels_ordered[:Np])
+                x = np.arange(Np)
+                pk = (positive*1.0)/(x+1)
+                #res_pk = pk[[int(10**i) for i in np.arange(0,6.5,0.5)]]
+                fid,ax = plt.subplots()
+                #ax.semilogx([int(10**i) for i in np.arange(0,6.5,0.5)],res_pk)
+                ax.semilogx(np.arange(0,Np),pk)
+                ax.grid()
+                plt.show()
+                res_precision_k.append(pk)
+                logger.info("{},sim_method:{},Precision_k:\n{}".format(os.path.basename(fn),sim_method,pk))
+            if 'AUC' in eval_metrics:
+                rank = len(test_labels)-np.where(labels_ordered == 1)[0]
+                M = len(rank)
+                N = len(test_labels)-M
+                aucs = (np.sum(rank)-M*(M+1)/2)*1.0/M/N
+                res_auc.append(aucs)
+                logger.info("{},sim_method:{},AUC:\t{}".format(os.path.basename(fn),sim_method,res_auc[-1]))
+    return res_precision_k,res_auc
+
 
 def evalution_task(dataset_names,embedding_filenames,args):
     np.random.seed(args.seed)
     sampling = args.sampling
     Np = args.Np
+    sim_methods = args.sim_methods
     eval_metrics = args.eval_metrics
     task = args.task
     if 'network_reconstruction' in task:
@@ -208,19 +302,25 @@ def evalution_task(dataset_names,embedding_filenames,args):
             G = load_edgelist(filename)
             logger.info("Graph info: num of nodes-----{},num of edges-----{}".format(G.number_of_nodes(), G.number_of_edges()))
             edges,labels = sampling_edges(G,sampling)
-            res = reconstruction_link_prediction(edges,labels,embedding_filenames,eval_metrics,args.sampling,Np)
+            res = network_reconstruction(edges,labels,embedding_filenames,sim_methods,eval_metrics,args.sampling,Np)
     if 'link_prediction' in task:
         logger.info("Begin link prediction")
         for filename in dataset_names:
             Path_name = os.path.dirname(filename)
+            G_name = os.path.dirname(Path_name)
+            dataset_name = os.path.join(G_name,os.path.basename(G_name)+".edgelist")
             Data_name = os.path.basename(Path_name)
             dataset_test_name = os.path.join(Path_name,Data_name+"_test.edgelist")
-            G_train = load_edgelist(filename)
+            dataset_train_name = os.path.join(Path_name,Data_name+"_train.edgelist")
+            G = load_edgelist(dataset_name)
+            G_train = load_edgelist(dataset_train_name)
             G_test = load_edgelist(dataset_test_name)
+            logger.info("Graph info: num of nodes-----{},num of edges-----{}".format(G.number_of_nodes(), G.number_of_edges()))
             logger.info("Graph_train info: num of nodes-----{},num of edges-----{}".format(G_train.number_of_nodes(), G_train.number_of_edges()))
             logger.info("Graph_test info: num of nodes-----{},num of edges-----{}".format(G_test.number_of_nodes(), G_test.number_of_edges()))
-            edges,labels = sampling_edges(G_train,sampling,G_test=G_test)
-            res = reconstruction_link_prediction(edges,labels,embedding_filenames,eval_metrics,sampling,Np)
+            #edges,labels = sampling_edges(G_train,sampling,G_test=G_test)
+            #res = network_reconstruction(edges,labels,embedding_filenames,sim_methods,eval_metrics,args.sampling,Np)
+            res = link_prediction(G,G_train,G_test,embedding_filenames,sim_methods,eval_metrics,sampling,Np)
     if 'node_classification' in task:
         logger.info("Begin node classification")
         for filename in dataset_names:
@@ -242,6 +342,8 @@ def parse_args():
             help="input embeddings path for embeddings")
     parser.add_argument("--seed", type=int, required=True,
             help="seed used for random number generator when randomly split data into training/test set.")
+    parser.add_argument("--sim-methods",nargs='*',type=str,required=True,
+            help="the method to evaluate the node similarty in network reconstruction and link prediction")
     parser.add_argument("--Np",type=float,default=1e6,
             help="number of Precision_k in network reconstruction or link prediction")
     parser.add_argument("--sampling",type=float,default=None,
