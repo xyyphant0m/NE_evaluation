@@ -8,6 +8,7 @@ from gensim.models import Word2Vec, KeyedVectors
 from sklearn.preprocessing import normalize
 from sklearn.linear_model import LogisticRegression
 import pickle as pkl
+import operator
 
 def load_w2v_feature(file):
     with open(file, "rb") as f:
@@ -97,6 +98,8 @@ def dot_product(X, Y):
 def batch_dot_product(emb, edges, batch_size=None):
     print("dot product")
     if batch_size is None:
+        #matrix_sim = emb.dot(emb.T)
+        #return matrix_sim[edges[:,0],edges[:,1]]
         return dot_product(emb[edges[:, 0]], emb[edges[:, 1]])
     batch_size = int(batch_size)
     n = int(edges.shape[0] // batch_size) # floor and /
@@ -167,14 +170,19 @@ def get_edge_embeddings(emb_matrix,edge_list,sim_method):
     embs = np.array(embs)
     return embs
 
+def test_dot(emb,e):
+    u = e[0]
+    v = e[1]
+    return np.dot(emb[u],emb[v])
+
 def get_similarity(emb,edges,labels,sim_method,train_lr_edges=None,train_lr_labels=None,batch_size=None):
-    print(edges.shape)
     if sim_method == 'dp':
         sim = batch_dot_product(emb,edges,batch_size)
+        #sim = [test_dot(emb,e) for e in list(edges)]
     elif sim_method == 'cos':
-        sim = batch_cos_similarity(emb,edges,batch_size)
+        sim = batch_cos_similarity(emb,edges,1e6)
     elif sim_method == 'euc':
-        sim = -batch_euclidean_distance(emb,edges,batch_size)
+        sim = -batch_euclidean_distance(emb,edges,1e6)
     else:
         test_edge_embs = get_edge_embeddings(emb,edges,sim_method)
         train_edge_embs = get_edge_embeddings(emb,train_lr_edges,sim_method)
@@ -183,6 +191,7 @@ def get_similarity(emb,edges,labels,sim_method,train_lr_edges=None,train_lr_labe
         #edge_classifier.fit(test_edge_embs, labels)
         #pro = edge_classifier.predict_proba(test_edge_embs)
         sim = edge_classifier.predict_proba(test_edge_embs)[:, 1]
+        #sim = edge_classifier.predict(test_edge_embs)
     return sim
 
 
@@ -282,9 +291,11 @@ def split_dataset(dataset_name, ratio=0.7):
     graph_train = nx.Graph()
     graph_test = nx.Graph()
     edges = np.random.permutation(list(graph.edges()))
+    #edges = list(graph.edges())
+    #np.random.shuffle(edges)
     nodes = set()
-    for a, b in edges:
-        if a not in nodes or b not in nodes:
+    for (a, b) in edges:
+        if a not in nodes or b not in nodes or a == b:
             graph_train.add_edge(a, b)
             nodes.add(a)
             nodes.add(b)
@@ -298,19 +309,55 @@ def split_dataset(dataset_name, ratio=0.7):
         test_edges = list(graph_test.edges())
         graph_train.add_edges_from(test_edges[:now_number-num_test_edges])
         graph_test.remove_edges_from(test_edges[:now_number-num_test_edges])
-
+    
     assert graph.number_of_nodes() == graph_train.number_of_nodes() , "graph_train do not have the same dimension with graph"
     get_graph_info(graph)
     get_graph_info(graph_train)
     get_graph_info(graph_test)
-
     data_path = os.path.join('../datasets',dataset_name,'{}_{}'.format(dataset_name, ratio))
-
     if not os.path.exists(data_path):
         os.makedirs(data_path)
+    nx.write_edgelist(graph_train, os.path.join(data_path, '{}_{}_train.edgelist'.format(dataset_name, ratio)), data=False)
+    nx.write_edgelist(graph_test, os.path.join(data_path, '{}_{}_test.edgelist'.format(dataset_name, ratio)), data=False)
 
-    nx.write_edgelist(graph_train, os.path.join(data_path, '{}_{}_train2.edgelist'.format(dataset_name, ratio)), data=False)
-    nx.write_edgelist(graph_test, os.path.join(data_path, '{}_{}_test2.edgelist'.format(dataset_name, ratio)), data=False)
+def hide_links(dataset_name, ratio=0.50):
+    filename = os.path.join('../datasets2', dataset_name, '{}.edgelist'.format(dataset_name))
+    hide_ratio = 1-ratio
+    whole = load_edgelist(filename)
+    trunc = nx.Graph()
+    trunc = whole.copy()
+    for u in range(whole.number_of_nodes()):
+        assert trunc.degree(u) > 0
+    edges = list(whole.edges())
+    np.random.shuffle(edges)
+    nums = int(whole.number_of_edges() * hide_ratio)
+    cnt = 0
+    for (u, v) in edges:
+        if u != v and trunc.degree(u) > 1 and trunc.degree(v) > 1:
+            if cnt < nums:
+                cnt = cnt + 1
+            #if np.random.rand() < hide_ratio:
+                trunc.remove_edge(u, v)
+    for u in range(whole.number_of_nodes()):
+        assert trunc.degree(u) > 0
+    assert trunc.number_of_nodes() == whole.number_of_nodes()
+    print("%d/%d edges kept in TRUNC" % (
+        trunc.number_of_edges(), whole.number_of_edges()))
+    get_graph_info(whole)
+    get_graph_info(trunc)
+
+    whole_edges = set(whole.edges())
+    trunc_edges = set(trunc.edges())
+    tp = whole_edges - trunc_edges
+    g_test = nx.from_edgelist(list(tp))
+    get_graph_info(g_test)
+
+    data_path = os.path.join('../datasets2',dataset_name,'{}_{}'.format(dataset_name, ratio))
+    if not os.path.exists(data_path):
+        os.makedirs(data_path)
+    nx.write_edgelist(trunc, os.path.join(data_path, '{}_{}_train.edgelist'.format(dataset_name, ratio)), data=False)
+
+
 
 
 
